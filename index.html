@@ -802,25 +802,29 @@
             searchPOIWithGaode(selectedTypes, currentPos, radius);
         }
         
-        // ✅ 修复2：高德POI搜索优化 - 提升医院匹配度，增加偏移量确保返回更多医疗数据
+        // ✅ 修复2：高德POI搜索优化并改为Promise返回 - 提升医院匹配率，便于上层按需重试
         function searchPOIWithGaode(types, center, radius) {
-            const typeMapping = {
-                'hospital': '090000', 'school': '110100|110200', 'shop': '060000', 'food': '050000',
-                'bank': '140000', 'pharmacy': '090300', 'park': '100100', 'entertainment': '080000', 'transport': '050100'
-            };
-            let queryTypes = types.map(type => typeMapping[type] || '060000').join('|');
-            const url = `https://restapi.amap.com/v3/place/around?key=${AMAP_KEY}&location=${center.lng},${center.lat}&radius=${radius}&types=${encodeURIComponent(queryTypes)}&offset=100&page=1&output=json&extensions=all`;
-            return fetch(url).then(r=>r.json()).then(data=>{
-                document.getElementById('searchLoading').style.display = 'none';
-                if (data.status === '1' && data.pois.length > 0) {
-                    const results = processPOIData(data.pois);
-                    displaySearchResults(results);
-                    addMarkersToMap(results);
-                } else {
-                    document.getElementById('searchResults').innerHTML = '<p style="text-align: center; color: #777;"><i class="fas fa-exclamation-triangle"></i> 未找到相关设施</p>';
-                }
-                return data;
-            }).catch(err=>{console.error(err);document.getElementById('searchLoading').style.display = 'none'; throw err;});
+            return new Promise((resolve, reject) => {
+                document.getElementById('searchLoading').style.display = 'block';
+                const typeMapping = {
+                    'hospital': '090000', 'school': '110100|110200', 'shop': '060000', 'food': '050000',
+                    'bank': '140000', 'pharmacy': '090300', 'park': '100100', 'entertainment': '080000', 'transport': '050100'
+                };
+                let queryTypes = types.map(type => typeMapping[type] || '060000').join('|');
+                const url = `https://restapi.amap.com/v3/place/around?key=${AMAP_KEY}&location=${center.lng},${center.lat}&radius=${radius}&types=${encodeURIComponent(queryTypes)}&offset=100&page=1&output=json&extensions=all`;
+                fetch(url).then(r=>r.json()).then(data=>{
+                    document.getElementById('searchLoading').style.display = 'none';
+                    if (data.status === '1' && data.pois && data.pois.length > 0) {
+                        const results = processPOIData(data.pois);
+                        displaySearchResults(results);
+                        addMarkersToMap(results);
+                        resolve(results);
+                    } else {
+                        document.getElementById('searchResults').innerHTML = '<p style="text-align: center; color: #777;"><i class="fas fa-exclamation-triangle"></i> 未找到相关设施</p>';
+                        resolve([]);
+                    }
+                }).catch(err=>{console.error(err);document.getElementById('searchLoading').style.display = 'none'; resolve([]);});
+            });
         }
         
         // 处理POI数据
@@ -843,18 +847,28 @@
             return allResults;
         }
         
-        // ✅ 修复3：增强设施类型匹配 - 匹配更多医院相关关键词，且容错 type 为空的情况
+        // ✅ 修复3：增强设施类型匹配 - 支持高德数值编码及文本关键词，提高医院/学校识别率
         function getFacilityType(type) {
-            type = (type || '').toString();
-            if (type.includes('医疗')||type.includes('医院')||type.includes('卫生院')||type.includes('诊所')||type.includes('妇幼')||type.includes('综合医院')||type.includes('医')) return 'hospital';
-            if (type.includes('学校')||type.includes('小学')||type.includes('中学')||type.includes('大学')||type.includes('教育')) return 'school';
-            if (type.includes('超市')||type.includes('购物')||type.includes('商场')) return 'shop';
-            if (type.includes('餐饮')||type.includes('饭店')||type.includes('餐厅')||type.includes('小吃')) return 'food';
-            if (type.includes('银行')) return 'bank';
-            if (type.includes('药房')||type.includes('药店')) return 'pharmacy';
-            if (type.includes('公园')||type.includes('绿地')||type.includes('广场')) return 'park';
-            if (type.includes('娱乐')) return 'entertainment';
-            if (type.includes('公交')||type.includes('地铁')||type.includes('交通')) return 'transport';
+            if (!type) return 'shop';
+            const t = String(type);
+            // 如果是数值编码（高德返回的类别编码），按前缀判断
+            if (/^0903/.test(t)) return 'pharmacy'; // 090300 等药店
+            if (/^09/.test(t)) return 'hospital';  // 090000/0901xx 医疗
+            if (/^11/.test(t)) return 'school';    // 110xxx 教育
+            if (/^06/.test(t)) return 'shop';      // 060xxx 购物
+            if (/^05/.test(t)) return 'food';      // 050xxx 餐饮/交通等，需要二次判断
+            if (/^10/.test(t)) return 'park';
+            // 兼容文本描述
+            const lower = t.toLowerCase();
+            if (lower.includes('医疗')||lower.includes('医院')||lower.includes('卫生院')||lower.includes('诊所')||lower.includes('妇幼')) return 'hospital';
+            if (lower.includes('学校')||lower.includes('小学')||lower.includes('中学')||lower.includes('大学')||lower.includes('幼儿园')) return 'school';
+            if (lower.includes('超市')||lower.includes('购物')||lower.includes('商场')) return 'shop';
+            if (lower.includes('餐饮')||lower.includes('饭店')||lower.includes('餐厅')||lower.includes('小吃')) return 'food';
+            if (lower.includes('银行')) return 'bank';
+            if (lower.includes('药房')||lower.includes('药店')||lower.includes('药局')) return 'pharmacy';
+            if (lower.includes('公园')||lower.includes('绿地')||lower.includes('广场')) return 'park';
+            if (lower.includes('娱乐')) return 'entertainment';
+            if (lower.includes('公交')||lower.includes('地铁')||lower.includes('客运')) return 'transport';
             return 'shop';
         }
         
@@ -957,33 +971,46 @@
             planRouteWithGaode(currentPos, destination);
         }
 
-        // 高德路径规划核心方法 - 步行/骑行/驾车 分类型精准规划
-        function planRouteWithGaode(origin, destination) {
+        // 高德路径规划核心方法 - 优先尝试首选出行方式，若失败则尝试备选方式，确保获取贴合道路的路径
+        async function planRouteWithGaode(origin, destination) {
+            document.getElementById('routeLoading').style.display = 'block';
+            // 尝试多种模式与策略，优先当前选择的方式
+            const tryResult = await tryGaodeModes(origin, destination, currentTransportMode);
+            document.getElementById('routeLoading').style.display = 'none';
+            if (tryResult && tryResult.data && tryResult.data.route && tryResult.data.route.paths.length > 0) {
+                const modeUsed = tryResult.mode;
+                const path = tryResult.data.route.paths[0];
+                const distance = parseInt(path.distance);
+                const duration = parseInt(path.duration);
+                displayRouteInfo(distance, duration, modeUsed);
+                displayRouteSteps(path.steps);
+                drawRouteOnMap(path.steps);
+                addDestinationMarker(destination.lat, destination.lng, destination.type);
+            } else {
+                fallbackRouteCalculate(origin, destination);
+            }
+        }
+        
+        // 尝试多种高德路线模式（含不同策略），返回第一个成功的结果
+        async function tryGaodeModes(origin, destination, preferredMode) {
+            const modeOrder = [preferredMode, 'walking', 'cycling', 'driving'];
             const modeMap = { walking: 'walk', cycling: 'ride', driving: 'driving' };
-            const gaodeMode = modeMap[currentTransportMode];
             const originStr = `${origin.lng},${origin.lat}`;
             const destStr = `${destination.lng},${destination.lat}`;
-            const strategy = currentTransportMode === 'driving' ? '&strategy=10' : currentTransportMode === 'cycling' ? '&strategy=2' : '';
-            const url = `https://restapi.amap.com/v3/direction/${gaodeMode}?key=${AMAP_KEY}&origin=${originStr}&destination=${destStr}&output=json${strategy}`;
-
-            fetch(url).then(r=>r.json()).then(data=>{
-                document.getElementById('routeLoading').style.display = 'none';
-                if (data.status === '1' && data.route && data.route.paths.length > 0) {
-                    const path = data.route.paths[0];
-                    const distance = parseInt(path.distance);
-                    const duration = parseInt(path.duration);
-                    displayRouteInfo(distance, duration);
-                    displayRouteSteps(path.steps);
-                    drawRouteOnMap(path.steps);
-                    addDestinationMarker(destination.lat, destination.lng, destination.type);
-                } else {
-                    fallbackRouteCalculate(origin, destination);
+            for (const mode of modeOrder) {
+                const gaodeMode = modeMap[mode];
+                if (!gaodeMode) continue;
+                // 针对驾车尝试不同策略
+                const strategies = mode === 'driving' ? ['&strategy=10', '&strategy=0'] : [''];
+                for (const strat of strategies) {
+                    const url = `https://restapi.amap.com/v3/direction/${gaodeMode}?key=${AMAP_KEY}&origin=${originStr}&destination=${destStr}&output=json${strat}`;
+                    try {
+                        const res = await fetch(url).then(r=>r.json());
+                        if (res && res.status === '1' && res.route && res.route.paths && res.route.paths.length > 0) return {data: res, mode: mode};
+                    } catch (e) { console.warn('尝试模式失败', mode, e); }
                 }
-            }).catch(error => {
-                console.error('路径规划失败:', error);
-                document.getElementById('routeLoading').style.display = 'none';
-                fallbackRouteCalculate(origin, destination);
-            });
+            }
+            return null;
         }
 
         // ✅ 核心优化4：兜底计算 - 基于精准速度的时间计算，三种出行方式耗时差异化明显
@@ -998,13 +1025,13 @@
             addDestinationMarker(destination.lat, destination.lng, destination.type);
         }
         
-        // 显示路线信息
-        function displayRouteInfo(distance, duration) {
+        // 显示路线信息（支持显示实际使用的交通方式）
+        function displayRouteInfo(distance, duration, actualMode) {
             const distanceKm = (distance / 1000).toFixed(2);
             const durationMin = Math.ceil(duration / 60);
             document.getElementById('routeDistance').textContent = distanceKm + '公里';
             document.getElementById('routeTime').textContent = durationMin + '分钟';
-            document.getElementById('routeModeText').textContent = getTransportModeText(currentTransportMode);
+            document.getElementById('routeModeText').textContent = getTransportModeText(actualMode || currentTransportMode);
             document.getElementById('routeInfo').style.display = 'block';
         }
         
@@ -1014,7 +1041,7 @@
             let html = '<h5><i class="fas fa-list-ol"></i> 路线指引</h5>';
             steps.forEach((step, index) => {
                 let icon = 'fas fa-arrow-right';
-                const instruction = step.instruction || step.action;
+                const instruction = (step.instruction || step.action || step.road || '').toString();
                 if (instruction.includes('直行')) icon = 'fas fa-arrow-up';
                 else if (instruction.includes('左转')) icon = 'fas fa-arrow-left';
                 else if (instruction.includes('右转')) icon = 'fas fa-arrow-right';
@@ -1109,44 +1136,42 @@
             return nearest;
         }
         
-        // 规划最近医院/学校路线
-        function simulateRoutePlanning(destinationType) {
+        // 规划最近医院/学校路线（增强版） - 如果本地标记中未找到，则逐步扩大半径发起POI检索，直到找到为止
+        async function findAndPlanNearest(destinationType) {
             const currentPos = currentMarker.getLatLng();
+            // 优先从已有的搜索结果中查找
             let destination = findNearestFacility(currentPos, destinationType);
             if (destination) {
                 window.currentDestination = destination;
                 planRoute();
                 return;
             }
-            // 如果没有已有搜索结果，则自动发起一次针对该类型的POI搜索（扩大半径），再尝试查找
-            document.getElementById('routeLoading').style.display = 'block';
-            document.getElementById('searchLoading').style.display = 'block';
-            document.getElementById('searchResults').innerHTML = '';
-            searchResultsGroup.clearLayers();
-            const fallbackRadius = 3000; // 3km
-            searchPOIWithGaode([destinationType], currentPos, fallbackRadius).then(()=>{
-                document.getElementById('routeLoading').style.display = 'none';
-                document.getElementById('searchLoading').style.display = 'none';
-                destination = findNearestFacility(currentPos, destinationType);
-                if (destination) {
-                    window.currentDestination = destination;
+            // 逐级扩大半径尝试查找（1km -> 2km -> 5km -> 10km）
+            const radii = [1000, 2000, 5000, 10000];
+            for (const r of radii) {
+                const results = await searchPOIWithGaode([destinationType], currentPos, r);
+                if (results && results.length > 0) {
+                    // 按距离再排序并选择最近的
+                    results.sort((a,b)=>{
+                        const da = calculateDistance(currentPos.lat, currentPos.lng, a.lat, a.lng);
+                        const db = calculateDistance(currentPos.lat, currentPos.lng, b.lat, b.lng);
+                        return da - db;
+                    });
+                    const nearest = results[0];
+                    window.currentDestination = {lat: nearest.lat, lng: nearest.lng, type: nearest.type};
                     planRoute();
-                } else {
-                    alert('未找到附近的' + facilityTypes[destinationType].name + '，请尝试更大范围或手动搜索');
+                    return;
                 }
-            }).catch(err=>{
-                console.error(err);
-                document.getElementById('routeLoading').style.display = 'none';
-                document.getElementById('searchLoading').style.display = 'none';
-                alert('搜索过程中出现错误，请稍后重试');
-            });
+            }
+            document.getElementById('routeLoading').style.display = 'none';
+            alert('未找到附近的' + facilityTypes[destinationType].name + '，请扩大搜索半径或尝试手动搜索');
         }
         
         // 事件绑定
         document.getElementById('clearRoute').addEventListener('click', clearRoute);
         document.getElementById('searchAllBtn').addEventListener('click', searchRealFacilities);
-        document.getElementById('nearestHospital').addEventListener('click', ()=>simulateRoutePlanning('hospital'));
-        document.getElementById('nearestSchool').addEventListener('click', ()=>simulateRoutePlanning('school'));
+        document.getElementById('nearestHospital').addEventListener('click', ()=>findAndPlanNearest('hospital'));
+        document.getElementById('nearestSchool').addEventListener('click', ()=>findAndPlanNearest('school'));
         document.getElementById('resetViewBtn').addEventListener('click', function() {
             map.setView(beijingCenter, 12);
             addCurrentLocationMarker(beijingCenter[0], beijingCenter[1]);
